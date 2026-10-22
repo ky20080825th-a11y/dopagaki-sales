@@ -1,0 +1,457 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101827">
+<title>ドパガキッチン｜売上管理</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f1f4f8;color:#172033;
+font-family:system-ui,sans-serif}
+header{background:#101827;color:white;padding:20px}
+header h1{margin:0;font-size:23px}
+header p{margin:5px 0 0;color:#cbd5e1}
+main{max-width:900px;margin:auto;padding:14px}
+.panel{background:white;padding:16px;border-radius:15px;
+margin-bottom:14px;box-shadow:0 2px 8px #0000000b}
+h2{font-size:18px;margin:0 0 12px}
+input,button{font:inherit}
+input{padding:11px;border:1px solid #cbd5e1;
+border-radius:9px;width:100%;margin:5px 0}
+button{border:0;border-radius:10px;padding:13px;
+cursor:pointer;font-weight:700}
+.primary{background:#2563eb;color:white}
+.danger{background:#fee2e2;color:#991b1b}
+.muted{background:#e2e8f0;color:#172033}
+button:disabled{opacity:.4;cursor:not-allowed}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.product{background:#fff;border:2px solid #dbe4f0;
+min-height:92px;text-align:left;padding:12px}
+.product:active{background:#dbeafe}
+.product b{display:block;font-size:17px}
+.product span{display:block;margin-top:5px;color:#2563eb}
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.stat{background:#f1f5f9;border-radius:10px;padding:12px}
+.stat small{color:#64748b}
+.stat strong{display:block;font-size:22px;margin-top:4px;
+overflow-wrap:anywhere}
+.line{display:flex;justify-content:space-between;align-items:center;
+gap:10px;padding:10px 0;border-bottom:1px solid #e2e8f0}
+.line:last-child{border-bottom:0}
+.line button{padding:8px 12px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row button{flex:1}
+.small{font-size:12px;color:#64748b}
+#app{display:none}
+#message{padding:10px 0;color:#b91c1c;white-space:pre-wrap}
+@media(min-width:600px){.grid{grid-template-columns:repeat(3,1fr)}
+.stats{grid-template-columns:repeat(4,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🍳 ドパガキッチン</h1>
+  <p>文化祭 売上管理システム</p>
+</header>
+
+<main>
+<section class="panel" id="login">
+  <h2>スタッフログイン</h2>
+  <p class="small">管理者から発行されたアカウントでログイン</p>
+  <input id="email" type="email" placeholder="メールアドレス"
+    autocomplete="username">
+  <input id="password" type="password" placeholder="パスワード"
+    autocomplete="current-password">
+  <button class="primary" id="loginBtn" style="width:100%">
+    ログイン
+  </button>
+  <div id="message"></div>
+</section>
+
+<div id="app">
+  <section class="panel">
+    <div class="row">
+      <span id="userLabel" class="small"></span>
+      <button class="muted" id="logoutBtn">ログアウト</button>
+    </div>
+    <div id="status" class="small">データ接続中...</div>
+  </section>
+
+  <section class="panel">
+    <h2>📊 売上状況</h2>
+    <div class="stats">
+      <div class="stat"><small>総売上</small>
+        <strong id="total">¥0</strong></div>
+      <div class="stat"><small>販売点数</small>
+        <strong id="units">0点</strong></div>
+      <div class="stat"><small>注文数</small>
+        <strong id="ordersCount">0件</strong></div>
+      <div class="stat"><small>在庫合計</small>
+        <strong id="stockTotal">0点</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>🛒 商品を選ぶ</h2>
+    <div class="grid" id="products"></div>
+  </section>
+
+  <section class="panel">
+    <h2>🧾 注文内容</h2>
+    <div id="cart"></div>
+    <div class="line"><b>お会計</b><strong id="cartTotal">¥0</strong></div>
+    <button class="primary" id="checkout" style="width:100%;margin-top:12px">
+      注文を確定する
+    </button>
+    <p class="small">確定後は売上と在庫が全端末で更新されます。</p>
+  </section>
+
+  <section class="panel">
+    <h2>📦 商品別売上・在庫</h2>
+    <div id="summary"></div>
+  </section>
+
+  <section class="panel">
+    <h2>🕒 注文履歴</h2>
+    <div id="history"></div>
+    <button class="muted" id="refreshHistory" style="width:100%;margin-top:10px">
+      履歴を再表示
+    </button>
+  </section>
+
+  <section class="panel">
+    <h2>⚙️ 在庫設定</h2>
+    <p class="small">初回は商品の在庫数を設定してください。
+    在庫数は全端末で共有されます。</p>
+    <div id="stockSettings"></div>
+  </section>
+</div>
+</main>
+
+<script type="module">
+import { initializeApp } from
+  "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+import {
+  getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
+import {
+  getFirestore, doc, collection, onSnapshot, getDoc,
+  runTransaction, query, orderBy, limit, getDocs
+} from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+
+// Firebaseコンソールの「アプリの設定」から値をコピーする
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDMIctqGtqD9-Mt5O6VoEkdUOUiy-I_Myg",
+  authDomain: "dopagakichen.firebaseapp.com",
+  projectId: "dopagakichen",
+  storageBucket: "dopagakichen.firebasestorage.app",
+  messagingSenderId: "998872826032",
+  appId: "1:998872826032:web:850d1994a321166d017b75",
+  measurementId: "G-R7Q2FHZ29G"
+};
+
+
+const appFirebase = initializeApp(firebaseConfig);
+const auth = getAuth(appFirebase);
+const db = getFirestore(appFirebase);
+
+const ITEMS = [
+  {id:"friedRice", name:"炒飯", price:400},
+  {id:"topping", name:"トッピング", price:100},
+  {id:"nope", name:"ノープ", price:150},
+  {id:"hammer", name:"ゴールデンハンマー", price:100},
+  {id:"oolong", name:"烏龍茶", price:100}
+];
+
+const yen = n => "¥" + Number(n || 0).toLocaleString("ja-JP");
+const stateRef = doc(db, "shops", "dopagaki");
+const ordersRef = collection(db, "shops", "dopagaki", "orders");
+
+let state = null;
+let orders = [];
+let cart = {};
+let stopState = null;
+let stopOrders = null;
+let busy = false;
+
+const $ = id => document.getElementById(id);
+const showError = e => {
+  console.error(e);
+  $("message").textContent =
+    e.code === "permission-denied"
+      ? "アクセスできません。Firestoreのルールとログイン権限を確認してください。"
+      : "エラー：" + (e.message || "通信状態を確認してください。");
+};
+const setStatus = s => $("status").textContent = s;
+
+$("loginBtn").onclick = async () => {
+  $("message").textContent = "";
+  try {
+    await signInWithEmailAndPassword(
+      auth, $("email").value.trim(), $("password").value
+    );
+  } catch(e) { showError(e); }
+};
+
+$("logoutBtn").onclick = () => signOut(auth);
+$("refreshHistory").onclick = loadHistory;
+
+onAuthStateChanged(auth, user => {
+  stopState?.(); stopOrders?.();
+  stopState = stopOrders = null;
+  state = null; orders = []; cart = {};
+  $("login").style.display = user ? "none" : "block";
+  $("app").style.display = user ? "block" : "none";
+  $("message").textContent = "";
+  if (!user) return;
+  $("userLabel").textContent = "ログイン中：" + user.email;
+  setStatus("データ接続中...");
+  startListeners();
+});
+
+function startListeners() {
+  stopState = onSnapshot(stateRef, snap => {
+    state = snap.exists() ? snap.data() : null;
+    render();
+    setStatus(state ? "● データ同期中" : "初期設定が必要です");
+  }, showError);
+
+  stopOrders = onSnapshot(
+    query(ordersRef, orderBy("createdAt","desc"), limit(100)),
+    snap => {
+      orders = snap.docs.map(d => ({id:d.id,...d.data()}));
+      renderHistory();
+    }, showError
+  );
+}
+
+async function loadHistory() {
+  try {
+    const snap = await getDocs(
+      query(ordersRef, orderBy("createdAt","desc"), limit(100))
+    );
+    orders = snap.docs.map(d => ({id:d.id,...d.data()}));
+    renderHistory();
+  } catch(e) { showError(e); }
+}
+
+function render() {
+  renderProducts();
+  renderCart();
+  renderSummary();
+  renderHistory();
+  renderStockSettings();
+  const s = state;
+  if (!s) {
+    $("total").textContent = yen(0);
+    $("units").textContent = "0点";
+    $("ordersCount").textContent = "0件";
+    $("stockTotal").textContent = "0点";
+    return;
+  }
+  $("total").textContent = yen(s.revenue);
+  $("units").textContent = (s.units || 0) + "点";
+  $("ordersCount").textContent = (s.orderCount || 0) + "件";
+  $("stockTotal").textContent =
+    ITEMS.reduce((a,p)=>a+(s.stock?.[p.id]||0),0) + "点";
+}
+
+function renderProducts() {
+  $("products").innerHTML = ITEMS.map(p => {
+    const stock = state?.stock?.[p.id] ?? 0;
+    return `<button class="product" data-add="${p.id}"
+      ${!state || stock <= 0 ? "disabled" : ""}>
+      <b>${p.name}</b><span>${yen(p.price)}</span>
+      <small>在庫：${stock}</small></button>`;
+  }).join("");
+  $("products").querySelectorAll("[data-add]").forEach(b => {
+    b.onclick = () => {
+      const id = b.dataset.add;
+      cart[id] = (cart[id] || 0) + 1;
+      renderCart();
+    };
+  });
+}
+
+function renderCart() {
+  $("cart").innerHTML = ITEMS.filter(p=>cart[p.id]).map(p =>
+    `<div class="line"><div>${p.name}<br><small>${yen(p.price)} × ${cart[p.id]}</small></div>
+    <div class="row">
+    <button class="muted" data-minus="${p.id}">−</button>
+    <button class="muted" data-plus="${p.id}">＋</button>
+    </div></div>`
+  ).join("") || '<p class="small">商品を選んでください。</p>';
+  $("cart").querySelectorAll("[data-minus]").forEach(b => b.onclick=()=>{
+    cart[b.dataset.minus]--;
+    if(cart[b.dataset.minus]<=0) delete cart[b.dataset.minus];
+    renderCart();
+  });
+  $("cart").querySelectorAll("[data-plus]").forEach(b => b.onclick=()=>{
+    cart[b.dataset.plus]=(cart[b.dataset.plus]||0)+1;
+    renderCart();
+  });
+  $("cartTotal").textContent = yen(ITEMS.reduce(
+    (sum,p)=>sum+p.price*(cart[p.id]||0),0
+  ));
+  $("checkout").disabled = busy || !state ||
+    !ITEMS.some(p=>(cart[p.id]||0)>0);
+}
+
+function renderSummary() {
+  $("summary").innerHTML = ITEMS.map(p => {
+    const sold = state?.sold?.[p.id] || 0;
+    const stock = state?.stock?.[p.id] || 0;
+    return `<div class="line"><div><b>${p.name}</b>
+    <div class="small">販売 ${sold}点 / 在庫 ${stock}点</div></div>
+    <strong>${yen(sold*p.price)}</strong></div>`;
+  }).join("");
+}
+
+function renderHistory() {
+  $("history").innerHTML = orders.map(o => {
+    const time = o.createdAt?.toDate
+      ? o.createdAt.toDate().toLocaleTimeString("ja-JP",
+        {hour:"2-digit",minute:"2-digit",second:"2-digit"})
+      : "時刻未取得";
+    const detail = ITEMS.filter(p=>(o.items?.[p.id]||0)>0)
+      .map(p=>`${p.name}×${o.items[p.id]}`).join("、");
+    return `<div class="line"><div><b>${time} / ${yen(o.total)}</b>
+    <div class="small">${detail}</div>
+    <div class="small">${o.cancelled ? "取消済み" : "注文確定"}</div></div>
+    ${!o.cancelled ? `<button class="danger" data-cancel="${o.id}">取消</button>` : ""}
+    </div>`;
+  }).join("") || '<p class="small">注文履歴はまだありません。</p>';
+  $("history").querySelectorAll("[data-cancel]").forEach(b=>{
+    b.onclick=()=>cancelOrder(b.dataset.cancel);
+  });
+}
+
+function renderStockSettings() {
+  $("stockSettings").innerHTML = ITEMS.map(p =>
+    `<div class="line"><div><b>${p.name}</b>
+    <div class="small">現在：${state?.stock?.[p.id] ?? 0}点</div></div>
+    <button class="muted" data-stock="${p.id}">在庫を設定</button></div>`
+  ).join("");
+  $("stockSettings").querySelectorAll("[data-stock]").forEach(b=>{
+    b.onclick=()=>setStock(b.dataset.stock);
+  });
+}
+
+$("checkout").onclick = async () => {
+  if (busy || !state) return;
+  const items = Object.fromEntries(
+    ITEMS.map(p=>[p.id,cart[p.id]||0]).filter(x=>x[1]>0)
+  );
+  if (!Object.keys(items).length) return;
+  busy = true; renderCart();
+  try {
+    const orderId = crypto.randomUUID();
+    await runTransaction(db, async tx => {
+      const snap = await tx.get(stateRef);
+      if (!snap.exists()) throw Error("先に初期設定をしてください。");
+      const s = snap.data();
+      const stock = {...s.stock};
+      const sold = {...s.sold};
+      let total = 0, units = 0;
+      for (const p of ITEMS) {
+        const n = items[p.id] || 0;
+        if (n < 0 || !Number.isInteger(n)) throw Error("数量が不正です。");
+        if (n > (stock[p.id]||0))
+          throw Error(`${p.name}の在庫が足りません。`);
+        stock[p.id] = (stock[p.id]||0)-n;
+        sold[p.id] = (sold[p.id]||0)+n;
+        total += p.price*n; units += n;
+      }
+      tx.update(stateRef,{
+        stock, sold,
+        revenue:(s.revenue||0)+total,
+        units:(s.units||0)+units,
+        orderCount:(s.orderCount||0)+1
+      });
+      tx.set(doc(ordersRef,orderId),{
+        items,total,units,cancelled:false,
+        createdAt:new Date(),
+        cashier:auth.currentUser?.email || ""
+      });
+    });
+    cart = {};
+    $("message").textContent = "";
+    alert("注文を確定しました！");
+  } catch(e) { showError(e); }
+  finally { busy=false; renderCart(); }
+};
+
+async function setStock(id) {
+  if (!state) return;
+  const p = ITEMS.find(x=>x.id===id);
+  const value = prompt(`${p.name}の現在の在庫数を入力してください`,
+    String(state.stock?.[id]||0));
+  if (value===null) return;
+  const n = Number(value);
+  if (!Number.isSafeInteger(n)||n<0) {
+    alert("0以上の整数を入力してください。"); return;
+  }
+  try {
+    await runTransaction(db,async tx=>{
+      const snap=await tx.get(stateRef);
+      if (!snap.exists()) throw Error("先に初期設定をしてください。");
+      const s=snap.data();
+      tx.update(stateRef,{stock:{...s.stock,[id]:n}});
+    });
+  } catch(e) { showError(e); }
+}
+
+async function cancelOrder(id) {
+  if (!confirm("この注文を取り消しますか？在庫と売上を戻します。")) return;
+  try {
+    await runTransaction(db,async tx=>{
+      const orderRef=doc(ordersRef,id);
+      const os=await tx.get(orderRef);
+      const ss=await tx.get(stateRef);
+      if(!os.exists()||!ss.exists()) throw Error("注文または売上データがありません。");
+      const o=os.data(), s=ss.data();
+      if(o.cancelled) throw Error("この注文は既に取り消されています。");
+      const stock={...s.stock}, sold={...s.sold};
+      for(const p of ITEMS){
+        const n=o.items?.[p.id]||0;
+        if(n>(sold[p.id]||0)) throw Error("販売数の整合性を確認してください。");
+        stock[p.id]=(stock[p.id]||0)+n;
+        sold[p.id]=(sold[p.id]||0)-n;
+      }
+      tx.update(stateRef,{
+        stock,sold,
+        revenue:(s.revenue||0)-o.total,
+        units:(s.units||0)-o.units,
+        orderCount:Math.max(0,(s.orderCount||0)-1)
+      });
+      tx.update(orderRef,{cancelled:true});
+    });
+  } catch(e) { showError(e); }
+}
+
+// 初回のみ：在庫0から開始する共有データを作る
+async function initializeData() {
+  await runTransaction(db,async tx=>{
+    const snap=await tx.get(stateRef);
+    if(snap.exists()) return;
+    tx.set(stateRef,{
+      stock:Object.fromEntries(ITEMS.map(p=>[p.id,0])),
+      sold:Object.fromEntries(ITEMS.map(p=>[p.id,0])),
+      revenue:0,units:0,orderCount:0
+    });
+  });
+}
+
+// ログイン後、共有データがない場合だけ初期化する
+// 初期化は在庫0で始まるため、実際の在庫を別途設定すること
+onAuthStateChanged(auth, async user=>{
+  if(!user) return;
+  try { await initializeData(); }
+  catch(e) { showError(e); }
+});
+</script>
+</body>
+</html>
