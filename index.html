@@ -49,7 +49,7 @@ gap:10px;padding:10px 0;border-bottom:1px solid #e2e8f0}
 #appMessage:empty{display:none}
 
 /* モード切替 */
-.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;
 position:sticky;top:0;z-index:5;background:#f1f4f8;padding:8px 0 10px}
 .tab{background:#e2e8f0;color:#334155;padding:12px 4px;font-size:15px}
 .tab.on{background:#101827;color:#fff}
@@ -116,7 +116,6 @@ font-weight:700;display:none;z-index:20;max-width:90%}
 
   <nav class="tabs">
     <button class="tab" data-mode="register">🛒 レジ</button>
-    <button class="tab" data-mode="kitchen">🔥 厨房</button>
     <button class="tab" data-mode="handover">🤝 受け渡し</button>
     <button class="tab" data-mode="admin">📊 管理</button>
   </nav>
@@ -137,18 +136,10 @@ font-weight:700;display:none;z-index:20;max-width:90%}
     <section class="panel">
       <h2>🎫 整理券を選ぶ</h2>
       <div class="tickets" id="tickets"></div>
-      <p class="small">灰色の番号は使用中です。受け渡しが済むと、その番号は再び選べます。</p>
+      <p class="small">灰色の番号は使用中です。受け渡しが済むと、その番号は再び選べます。ドリンクだけの注文は整理券なしで、そのまま管理に記録されます。</p>
       <button class="primary" id="checkout" style="width:100%;margin-top:6px">
-        注文を確定して厨房へ送る
+        注文を確定する
       </button>
-    </section>
-  </div>
-
-  <!-- 厨房 -->
-  <div class="mode" data-mode="kitchen">
-    <section class="panel">
-      <h2>🔥 調理待ち <span id="kitchenCount" class="small"></span></h2>
-      <div class="orders" id="kitchenList"></div>
     </section>
   </div>
 
@@ -156,7 +147,6 @@ font-weight:700;display:none;z-index:20;max-width:90%}
   <div class="mode" data-mode="handover">
     <section class="panel">
       <h2>🤝 受け渡し待ち <span id="handoverCount" class="small"></span></h2>
-      <p class="waitline" id="cookingLine"></p>
       <div class="orders" id="handoverList"></div>
     </section>
   </div>
@@ -223,10 +213,12 @@ const db = getFirestore(appFirebase);
 
 const ITEMS = [
   {id:"friedRice", name:"炒飯", price:400},
-  {id:"topping", name:"トッピング", price:100},
+  {id:"negi", name:"ネギ炒飯", price:500},
+  {id:"kimchi", name:"キムチ炒飯", price:500},
+  {id:"garlic", name:"にんにく炒飯", price:500},
   {id:"nope", name:"ノープ", price:150},
   {id:"hammer", name:"ゴールデンハンマー", price:100},
-  {id:"oolong", name:"烏龍茶", price:100}
+  {id:"oolong", name:"烏龍茶", price:100, drink:true}
 ];
 const TICKET_MAX = 10;   // 整理券の枚数
 
@@ -245,6 +237,7 @@ let busy = false;
 let firstOrdersLoad = true;
 let mode = "register";
 try { mode = localStorage.getItem("dopagaki-mode") || "register"; } catch {}
+if (!["register","handover","admin"].includes(mode)) mode = "register";
 
 const $ = id => document.getElementById(id);
 const showError = e => {
@@ -270,7 +263,7 @@ function flash(text) {
   toastTimer = setTimeout(() => t.style.display = "none", 2500);
 }
 
-// 厨房に新しい注文が来たときの通知音
+// 受け渡し画面に新しい注文が来たときの通知音
 let audioCtx;
 function beep() {
   try {
@@ -291,6 +284,8 @@ const timeText = o => o.createdAt?.toDate
 const detailText = o => ITEMS.filter(p => (o.items?.[p.id]||0) > 0)
   .map(p => `${p.name}×${o.items[p.id]}`).join("、");
 const isActive = o => !o.cancelled && (o.status === "ordered" || o.status === "ready");
+// ドリンク以外が入っていれば整理券が必要
+const needsTicket = () => ITEMS.some(p => !p.drink && (cart[p.id]||0) > 0);
 
 /* ---------- ログイン ---------- */
 $("loginBtn").onclick = async () => {
@@ -349,11 +344,11 @@ function startListeners() {
       if (!firstOrdersLoad) {
         const hasNew = snap.docChanges().some(c =>
           c.type === "added" && c.doc.data().status === "ordered");
-        if (hasNew && mode === "kitchen") beep();
+        if (hasNew && mode === "handover") beep();
       }
       firstOrdersLoad = false;
       orders = snap.docs.map(d => ({id:d.id,...d.data()}));
-      renderKitchen(); renderHandover(); renderHistory();
+      renderHandover(); renderHistory();
     }, showError
   );
 
@@ -371,7 +366,7 @@ async function loadHistory() {
       query(ordersRef, orderBy("createdAt","desc"), limit(200))
     );
     orders = snap.docs.map(d => ({id:d.id,...d.data()}));
-    renderKitchen(); renderHandover(); renderHistory();
+    renderHandover(); renderHistory();
   } catch(e) { showError(e); }
 }
 
@@ -379,7 +374,7 @@ async function loadHistory() {
 function render() {
   renderProducts(); renderTickets(); renderCart();
   renderSummary(); renderHistory(); renderStockSettings();
-  renderKitchen(); renderHandover();
+  renderHandover();
   const s = state;
   if (!s) {
     $("total").textContent = yen(0);
@@ -445,37 +440,19 @@ function renderCart() {
   $("cartTotal").textContent = yen(ITEMS.reduce(
     (sum,p)=>sum+p.price*(cart[p.id]||0),0
   ));
-  $("checkout").disabled = busy || !state || !selectedTicket ||
-    !ITEMS.some(p=>(cart[p.id]||0)>0);
-  $("checkout").textContent = selectedTicket
-    ? `整理券${selectedTicket}番で確定して厨房へ送る`
+  const hasItems = ITEMS.some(p=>(cart[p.id]||0)>0);
+  const ticketNeeded = needsTicket();
+  $("checkout").disabled = busy || !state || !hasItems ||
+    (ticketNeeded && !selectedTicket);
+  $("checkout").textContent = !hasItems ? "商品を選んでください"
+    : !ticketNeeded ? "ドリンクのみ：確定して管理に記録する"
+    : selectedTicket ? `整理券${selectedTicket}番で確定して受け渡しへ送る`
     : "整理券を選んでください";
 }
 
-function renderKitchen() {
-  const list = orders.filter(o => !o.cancelled && o.status === "ordered")
-    .sort((a,b) => ms(a) - ms(b));
-  $("kitchenCount").textContent = list.length ? `（${list.length}件）` : "";
-  $("kitchenList").innerHTML = list.map(o =>
-    `<div class="card">
-      <div class="no">${o.ticket}<small>番</small></div>
-      <div class="items">${detailText(o)}</div>
-      <div class="meta">${timeText(o)} に注文</div>
-      <button class="warn" data-ready="${o.id}">調理完了</button>
-    </div>`
-  ).join("") || '<div class="empty">調理待ちの注文はありません。</div>';
-  $("kitchenList").querySelectorAll("[data-ready]").forEach(b => {
-    b.onclick = () => changeStatus(b.dataset.ready, "ready", b);
-  });
-}
-
 function renderHandover() {
-  const cooking = orders.filter(o => !o.cancelled && o.status === "ordered")
-    .sort((a,b) => ms(a) - ms(b));
-  $("cookingLine").innerHTML = cooking.length
-    ? "調理中：" + cooking.map(o => `<b>${o.ticket}</b>`).join("")
-    : "調理中の注文はありません。";
-  const list = orders.filter(o => !o.cancelled && o.status === "ready")
+  const list = orders.filter(o => !o.cancelled &&
+      (o.status === "ordered" || o.status === "ready"))
     .sort((a,b) => ms(a) - ms(b));
   $("handoverCount").textContent = list.length ? `（${list.length}件）` : "";
   $("handoverList").innerHTML = list.map(o =>
@@ -484,15 +461,10 @@ function renderHandover() {
       <div class="items">${detailText(o)}</div>
       <div class="meta">${timeText(o)} に注文</div>
       <button class="ok" data-handed="${o.id}">受け渡し済み</button>
-      <button class="muted" style="margin-top:8px;font-size:14px;padding:10px"
-        data-back="${o.id}">調理中に戻す</button>
     </div>`
   ).join("") || '<div class="empty">受け渡し待ちの注文はありません。</div>';
   $("handoverList").querySelectorAll("[data-handed]").forEach(b => {
     b.onclick = () => changeStatus(b.dataset.handed, "handed", b);
-  });
-  $("handoverList").querySelectorAll("[data-back]").forEach(b => {
-    b.onclick = () => changeStatus(b.dataset.back, "ordered", b);
   });
 }
 
@@ -508,8 +480,7 @@ function renderSummary() {
 
 function statusLabel(o) {
   if (o.cancelled) return "取消済み";
-  if (o.status === "ordered") return "調理中";
-  if (o.status === "ready") return "完成・受け渡し待ち";
+  if (o.status === "ordered" || o.status === "ready") return "受け渡し待ち";
   return "受け渡し済み";
 }
 
@@ -517,7 +488,7 @@ function renderHistory() {
   const recent = orders.slice(0, 100);
   $("history").innerHTML = recent.map(o => {
     return `<div class="line"><div>
-    <b>${o.ticket ? `整理券${o.ticket}番 / ` : ""}${timeText(o)} / ${yen(o.total)}</b>
+    <b>${o.ticket ? `整理券${o.ticket}番 / ` : (o.drinkOnly ? "ドリンク / " : "")}${timeText(o)} / ${yen(o.total)}</b>
     <div class="small">${detailText(o)}</div>
     <div class="small">${statusLabel(o)}</div></div>
     ${!o.cancelled ? `<button class="danger" data-cancel="${o.id}">取消</button>` : ""}
@@ -541,21 +512,23 @@ function renderStockSettings() {
 
 /* ---------- 注文確定（整理券つき） ---------- */
 $("checkout").onclick = async () => {
-  if (busy || !state || !selectedTicket) return;
+  if (busy || !state) return;
   const items = Object.fromEntries(
     ITEMS.map(p=>[p.id,cart[p.id]||0]).filter(x=>x[1]>0)
   );
   if (!Object.keys(items).length) return;
-  const ticket = selectedTicket;
+  const hasFood = needsTicket();
+  if (hasFood && !selectedTicket) return;
+  const ticket = hasFood ? selectedTicket : null;
   busy = true; renderCart();
   try {
     const orderId = crypto.randomUUID();
-    const tRef = doc(ticketsRef, String(ticket));
+    const tRef = hasFood ? doc(ticketsRef, String(ticket)) : null;
     await runTransaction(db, async tx => {
       const snap = await tx.get(stateRef);
-      const tSnap = await tx.get(tRef);
+      const tSnap = hasFood ? await tx.get(tRef) : null;
       if (!snap.exists()) throw Error("先に初期設定をしてください。");
-      if (tSnap.exists())
+      if (tSnap?.exists())
         throw Error(`整理券${ticket}番は別の端末で使用中です。別の番号を選んでください。`);
       const s = snap.data();
       const stock = {...s.stock};
@@ -576,10 +549,12 @@ $("checkout").onclick = async () => {
         units:(s.units||0)+units,
         orderCount:(s.orderCount||0)+1
       });
-      tx.set(tRef,{orderId});
+      if (hasFood) tx.set(tRef,{orderId});
       tx.set(doc(ordersRef,orderId),{
         items,total,units,ticket,
-        status:"ordered",
+        drinkOnly:!hasFood,
+        status:hasFood ? "ordered" : "handed",
+        ...(hasFood ? {} : {handedAt:new Date()}),
         cancelled:false,
         createdAt:new Date(),
         cashier:auth.currentUser?.email || ""
@@ -587,7 +562,7 @@ $("checkout").onclick = async () => {
     });
     cart = {}; selectedTicket = null;
     clearError();
-    flash(`整理券${ticket}番の注文を厨房へ送りました`);
+    flash(hasFood ? `整理券${ticket}番の注文を受け渡しへ送りました` : "ドリンクを管理に記録しました");
   } catch(e) { showError(e); }
   finally { busy=false; renderTickets(); renderCart(); }
 };
